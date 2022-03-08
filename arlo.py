@@ -45,8 +45,8 @@ import requests
 import signal
 import time
 
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+# from google_auth_oauthlib.flow import InstalledAppFlow
+# from googleapiclient.discovery import build
 
 #logging.basicConfig(level=logging.DEBUG,format='[%(levelname)s] (%(threadName)-10s) %(message)s',)
 
@@ -54,7 +54,7 @@ class Arlo(object):
     BASE_URL = 'my.arlo.com'
     AUTH_URL = 'ocapi-app.arlo.com'
     TRANSID_PREFIX = 'web'
-    def __init__(self, username, password, google_credential_file=None):
+    def __init__(self):
 
         # signals only work in main thread
         try:
@@ -65,10 +65,12 @@ class Arlo(object):
         self.event_stream = None
         self.request = None
 
-        if google_credential_file:
-          self.LoginMFA(username, password, google_credential_file)
-        else:
-          self.Login(username, password)
+        # if google_credential_file:
+        #   self.LoginMFA(username, password, google_credential_file)
+        # elif manual_mfa:
+        #   self.LoginManualMFA(username, password)
+        # else:
+        #   self.Login(username, password)
 
     def interrupt_handler(self, signum, frame):
         print("Caught Ctrl-C, exiting.")
@@ -176,6 +178,100 @@ class Arlo(object):
         self.user_id = body['userId']
         return body
 
+    def LoginManualMFA(self, username, password):
+      self.username = username
+      self.password = password
+      self.request = Request()
+
+      # request MFA token
+      request_start_time = int(time.time())
+      
+      headers = {
+          'DNT': '1',
+          'schemaVersion': '1',
+          'Auth-Version': '2',
+          'Content-Type': 'application/json; charset=UTF-8',
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_1_2 like Mac OS X) AppleWebKit/604.3.5 (KHTML, like Gecko) Mobile/15B202 NETGEAR/v1 (iOS Vuezone)',
+          'Origin': f'https://{self.BASE_URL}',
+          'Referer': f'https://{self.BASE_URL}/',
+          'Source': 'arloCamWeb',
+          'TE': 'Trailers',
+      }
+
+      self.request.session.headers.update(headers)
+
+      # Authenticate
+      auth_body = self.request.post(
+              f'https://{self.AUTH_URL}/api/auth',
+          params={
+              'email': self.username,
+              'password': str(base64.b64encode(self.password.encode('utf-8')), 'utf-8'),
+              'language': 'en',
+              'EnvSource': 'prod'
+          },
+          headers=headers,
+          raw=True
+      )
+      self.user_id = auth_body['data']['userId']
+      self.request.session.headers.update({'Authorization': base64.b64encode(auth_body['data']['token'].encode('utf-8'))})
+
+      # Retrieve email factor id
+      factors_body = self.request.get(
+          f'https://{self.AUTH_URL}/api/getFactors',
+          params={'data': auth_body['data']['issued']},
+          headers=headers,
+          raw=True
+      )
+
+      #get primary factor type
+      factor = next(i for i in factors_body['data']['items'] if i['factorRole'] == "PRIMARY")
+
+      # Start factor auth
+      start_auth_body = self.request.post(
+          f'https://{self.AUTH_URL}/api/startAuth',
+          {'factorId': factor['factorId']},
+          headers=headers,
+          raw=True
+      )
+      self.factor_auth_code = start_auth_body['data']['factorAuthCode']
+      print("using ", factor["factorType"], "authentication")
+      return factor["factorType"]
+
+    def AuthenticateManualMFA(self, code=None):
+      print("CODE", code)
+      # for push auth
+      if code is None:
+        finish_auth_body = self.request.post(
+          f'https://{self.AUTH_URL}/api/finishAuth',
+          {
+              'factorAuthCode': self.factor_auth_code,
+          },
+          headers=self.request.session.headers,
+          raw=True
+      )
+      else:
+      # Complete auth
+        finish_auth_body = self.request.post(
+            f'https://{self.AUTH_URL}/api/finishAuth',
+            {
+                'factorAuthCode': self.factor_auth_code,
+                'otp': code
+            },
+            headers=self.request.session.headers,
+            raw=True
+        )
+      if not finish_auth_body['data']['token']:
+        return False
+      # Update Authorization code with new code
+      headers = {
+          'Auth-Version': '2',
+          'Authorization': finish_auth_body['data']['token'].encode('utf-8'),
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_1_2 like Mac OS X) AppleWebKit/604.3.5 (KHTML, like Gecko) Mobile/15B202 NETGEAR/v1 (iOS Vuezone)',
+      }
+      self.request.session.headers.update(headers)
+      self.BASE_URL = 'myapi.arlo.com'
+      return True
+
     def LoginMFA(self, username, password, google_credential_file):
         self.username = username
         self.password = password
@@ -233,7 +329,7 @@ class Arlo(object):
         # search for MFA token in latest emails
         pattern = '\d{6}'
         code = None
-        service = build('gmail', 'v1', credentials = self.google_credentials)
+        # service = build('gmail', 'v1', credentials = self.google_credentials)
 
         for i in range(0, 10):
             time.sleep(5)
