@@ -23,9 +23,6 @@ try:
     import Queue as queue
 except ImportError:
     import queue as queue
-
-from request import Request
-from eventstream import EventStream
     
 # Import all of the other stuff.
 from six import string_types, text_type
@@ -41,7 +38,7 @@ import os
 import pickle
 import random
 import re
-import requests
+from requests import Request
 import signal
 import time
 
@@ -380,73 +377,6 @@ class Arlo(object):
     def Logout(self):
         self.Unsubscribe()
         return self.request.put(f'https://{self.BASE_URL}/hmsweb/logout')
-
-    def Subscribe(self, basestation):
-        """
-        Arlo uses the EventStream interface in the browser to do pub/sub style messaging.
-        Unfortunately, this appears to be the only way Arlo communicates these messages.
-
-        This function makes the initial GET request to /subscribe, which returns the EventStream socket.
-        Once we have that socket, the API requires a POST request to /notify with the "subscriptionsresource.
-        This call "registersthe device (which should be the basestation) so that events will be sent to the EventStream
-        when subsequent calls to /notify are made.
-
-        Since this interface is asynchronous, and this is a quick and dirty hack to get this working, I'm using a thread
-        to listen to the EventStream. This thread puts events into a queue. Some polling is required (see NotifyAndGetResponse()) because
-        the event messages aren't guaranteed to be delivered in any specific order, but I wanted to maintain a synchronous style API.
-
-        You generally shouldn't need to call Subscribe() directly, although I'm leaving it "publicfor now.
-        """
-        basestation_id = basestation.get('deviceId')
-
-        def Register(self):
-            if self.event_stream and self.event_stream.connected and not self.event_stream.registered:
-                self.Notify(basestation, {"action":"set","resource":"subscriptions/"+self.user_id+"_web","publishResponse":False,"properties":{"devices":[basestation_id]}})
-                event = self.event_stream.Get()
-                if event is None or self.event_stream.event_stream_stop_event.is_set():
-                    return None
-                elif event:
-                    self.event_stream.Register()
-                return event
-
-        def QueueEvents(self, event_stream, stop_event):
-            for event in event_stream:
-                if event is None or stop_event.is_set():
-                    return None
-
-                response = json.loads(event.data)
-                if self.event_stream and self.event_stream.connected:
-                    if response.get('action') == 'logout':
-                        self.event_stream.Disconnect()
-                        return None
-                    else:
-                        self.event_stream.queue.put(response)
-                elif response.get('status') == 'connected':
-                    self.event_stream.Connect()
-
-        def Heartbeat(self, stop_event):
-            while not stop_event.wait(30.0):
-                try:
-                    self.Ping(basestation)
-                except:
-                    pass
-
-        if not self.event_stream or not self.event_stream.connected:
-            self.event_stream = EventStream(QueueEvents, Heartbeat, args=(self, ))
-            self.event_stream.Start()
-            while not self.event_stream.connected and not self.event_stream.event_stream_stop_event.is_set():
-                time.sleep(0.5)
-
-        if not self.event_stream.registered:
-            Register(self)
-
-    def Unsubscribe(self):
-        """ This method stops the EventStream subscription and removes it from the event_stream collection. """
-        if self.event_stream and self.event_stream.connected:
-            self.request.get(f'https://{self.BASE_URL}/hmsweb/client/unsubscribe')
-            self.event_stream.Disconnect()
-
-        self.event_stream = None
 
     def Notify(self, basestation, body):
         """
