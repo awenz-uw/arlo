@@ -25,6 +25,7 @@ except ImportError:
     import queue as queue
     
 # Import all of the other stuff.
+from .request import Request
 from six import string_types, text_type
 from datetime import datetime
 
@@ -38,7 +39,7 @@ import os
 import pickle
 import random
 import re
-from requests import Request
+import requests
 import signal
 import time
 
@@ -209,6 +210,7 @@ class Arlo(object):
           headers=headers,
           raw=True
       )
+
       self.user_id = auth_body['data']['userId']
       self.request.session.headers.update({'Authorization': base64.b64encode(auth_body['data']['token'].encode('utf-8'))})
 
@@ -231,11 +233,9 @@ class Arlo(object):
           raw=True
       )
       self.factor_auth_code = start_auth_body['data']['factorAuthCode']
-      print("using ", factor["factorType"], "authentication")
       return factor["factorType"]
 
     def AuthenticateManualMFA(self, code=None):
-      print("CODE", code)
       # for push auth
       if code is None:
         finish_auth_body = self.request.post(
@@ -375,7 +375,6 @@ class Arlo(object):
         self.BASE_URL = 'myapi.arlo.com'
 
     def Logout(self):
-        self.Unsubscribe()
         return self.request.put(f'https://{self.BASE_URL}/hmsweb/logout')
 
     def Notify(self, basestation, body):
@@ -1683,102 +1682,3 @@ class Arlo(object):
             for chunk in r.iter_content(chunk_size):
                 fd.write(chunk)
         fd.close()
-
-    def StartStream(self, basestation, camera):
-        """
-        This function returns the url of the rtsp video stream.
-        This stream needs to be called within 30 seconds or else it becomes invalid.
-        It can be streamed with: ffmpeg -re -i 'rtsps://<url>' -acodec copy -vcodec copy test.mp4
-        The request to /users/devices/startStream returns: { url:rtsp://<url>:443/vzmodulelive?egressToken=b<xx>&userAgent=iOS&cameraId=<camid>}
-        """
-        # nonlocal variable hack for Python 2.x.
-        class nl:
-            stream_url_dict = None
-
-        def trigger(self):
-            nl.stream_url_dict = self.request.post(f'https://{self.BASE_URL}/hmsweb/users/devices/startStream', {"to":camera.get('parentId'),"from":self.user_id+"_web","resource":"cameras/"+camera.get('deviceId'),"action":"set","responseUrl":"", "publishResponse":True,"transId":self.genTransId(),"properties":{"activityState":"startUserStream","cameraId":camera.get('deviceId')}}, headers={"xcloudId":camera.get('xCloudId')})
-
-        def callback(self, event):
-            if event.get("from") == basestation.get("deviceId") and event.get("resource") == "cameras/"+camera.get("deviceId") and event.get("properties", {}).get("activityState") == "userStreamActive":
-                return nl.stream_url_dict['url'].replace("rtsp://", "rtsps://")
-
-            return None
-
-        return self.TriggerAndHandleEvent(basestation, trigger, callback)
-
-    def StopStream(self, basestation, camera):
-
-        # nonlocal variable hack for Python 2.x.
-        class nl:
-            stream_url_dict = None
-
-        def trigger(self):
-            self.request.post(f'https://{self.BASE_URL}/hmsweb/users/devices/stopStream', {"to":camera.get('parentId'),"from":self.user_id+"_web","resource":"cameras/"+camera.         get('deviceId'),"action":"set","responseUrl":"", "publishResponse":True,"transId":self.genTransId(),"properties":{"activityState":"stopUserStream","cameraId":camera.get('deviceId')}}, headers={"xcloudId": camera.get('xCloudId')})
-
-        def callback(self, event):
-            if event.get("from") == basestation.get("deviceId") and event.get("resource") == "cameras/"+camera.get("deviceId") and event.get("properties", {}).get("activityState") == "userStreamActive":
-                return nl.stream_url_dict['url'].replace("rtsp://", "rtsps://")
-            return None
-
-        return self.TriggerAndHandleEvent(basestation, trigger, callback)
-
-    def TriggerStreamSnapshot(self, basestation, camera):
-        """
-        This function causes the camera to snapshot while recording.
-        NOTE: You MUST call StartStream() before calling this function.
-        If you call StartStream(), you have to start reading data from the stream, or streaming will be cancelled
-        and taking a snapshot may fail (since it requires the stream to be active).
-
-        NOTE: You should not use this function is you just want a snapshot and aren't intending to stream.
-        Use TriggerFullFrameSnapshot() instead.
-
-        NOTE: Use DownloadSnapshot() to download the actual image file.
-        """
-        def trigger(self):
-            self.request.post(f'https://{self.BASE_URL}/hmsweb/users/devices/takeSnapshot', {'xcloudId':camera.get('xCloudId'),'parentId':camera.get('parentId'),'deviceId':camera.get('deviceId'),'olsonTimeZone':camera.get('properties', {}).get('olsonTimeZone')}, headers={"xcloudId":camera.get('xCloudId')})
-
-        def callback(self, event):
-            if event.get("deviceId") == camera.get("deviceId") and event.get("resource") == "mediaUploadNotification":
-                presigned_content_url = event.get("presignedContentUrl")
-                if presigned_content_url is not None:
-                    return presigned_content_url
-
-            return None
-
-        return self.TriggerAndHandleEvent(basestation, trigger, callback)
-
-    def TriggerFullFrameSnapshot(self, basestation, camera):
-        """
-        This function causes the camera to record a fullframe snapshot.
-        The presignedFullFrameSnapshotUrl url is returned.
-        Use DownloadSnapshot() to download the actual image file.
-        """
-        def trigger(self):
-            self.request.post("https://my.arlo.com/hmsweb/users/devices/fullFrameSnapshot", {"to":camera.get("parentId"),"from":self.user_id+"_web","resource":"cameras/"+camera.get("deviceId"),"action":"set","publishResponse":True,"transId":self.genTransId(),"properties":{"activityState":"fullFrameSnapshot"}}, headers={"xcloudId":camera.get("xCloudId")})
-
-        def callback(self, event):
-            if event.get("from") == basestation.get("deviceId") and event.get("resource") == "cameras/"+camera.get("deviceId") and event.get("action") == "fullFrameSnapshotAvailable":
-                return event.get("properties", {}).get("presignedFullFrameSnapshotUrl")
-            return None
-
-        return self.TriggerAndHandleEvent(basestation, trigger, callback)
-
-    def StartRecording(self, basestation, camera):
-        """
-        This function causes the camera to start recording.
-        You can get the timezone from GetDevices().
-        """
-        stream_url = self.StartStream(basestation, camera)
-        self.request.post(f'https://{self.BASE_URL}/hmsweb/users/devices/startRecord', {'xcloudId':camera.get('xCloudId'),'parentId':camera.get('parentId'),'deviceId':camera.get('deviceId'),'olsonTimeZone':camera.get('properties', {}).get('olsonTimeZone')}, headers={"xcloudId":camera.get('xCloudId')})
-        return stream_url
-
-    def StopRecording(self, camera):
-        """
-        This function causes the camera to stop recording.
-        You can get the timezone from GetDevices().
-        """
-        return self.request.post(f'https://{self.BASE_URL}/hmsweb/users/devices/stopRecord', {'xcloudId':camera.get('xCloudId'),'parentId':camera.get('parentId'),'deviceId':camera.get('deviceId'),'olsonTimeZone':camera.get('properties', {}).get('olsonTimeZone')}, headers={"xcloudId":camera.get('xCloudId')})
-
-    def GetCvrPlaylist(self, camera, fromDate, toDate):
-        """ This function downloads a Cvr Playlist file for the period fromDate to toDate. """
-        return self.request.get(f'https://{self.BASE_URL}/hmsweb/users/devices/'+camera.get('deviceId')+'/playlist?fromDate='+fromDate+'&toDate='+toDate)
